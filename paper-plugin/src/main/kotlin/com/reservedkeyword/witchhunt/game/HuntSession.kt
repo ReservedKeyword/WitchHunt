@@ -278,7 +278,7 @@ class HuntSession(
         }
     }
 
-    private suspend fun transitionEvent(sessionEvent: SessionEvent): Result<SessionState> {
+    private fun transitionEvent(sessionEvent: SessionEvent): Result<SessionState> {
         val current = currentState
 
         val updatedState = when (sessionEvent) {
