@@ -9,8 +9,8 @@ data class HuntGameState(
 ) {
     fun clearHuntSession(): HuntGameState = copy(activeHuntSession = null)
 
-    fun withEndedAttempt(outcome: AttemptOutcome): HuntGameState {
-        val endedAttempt = currentAttempt?.withEnd(outcome) ?: return this
+    fun withEndedAttempt(attemptOutcome: AttemptOutcome): HuntGameState {
+        val endedAttempt = currentAttempt?.withEnd(attemptOutcome) ?: return this
 
         return copy(
             currentAttempt = null,
@@ -21,19 +21,19 @@ data class HuntGameState(
         )
     }
 
-    fun withHunterEncounter(encounter: HunterEncounter): HuntGameState {
-        val updatedAttempt = currentAttempt?.withHunterEncounter(encounter) ?: return this
+    fun withHunterEncounter(hunterEncounter: HunterEncounter): HuntGameState {
+        val updatedAttempt = currentAttempt?.withHunterEncounter(hunterEncounter) ?: return this
 
         return copy(
             currentAttempt = updatedAttempt
         )
     }
 
-    fun withHuntSession(session: HuntSessionState): HuntGameState = copy(activeHuntSession = session)
+    fun withHuntSession(huntSessionState: HuntSessionState): HuntGameState = copy(activeHuntSession = huntSessionState)
 
-    fun withNewAttempt(attempt: GameAttempt): HuntGameState = copy(
+    fun withNewAttempt(gameAttempt: GameAttempt): HuntGameState = copy(
         activeHuntSession = null,
-        currentAttempt = attempt,
+        currentAttempt = gameAttempt,
         isActive = true,
         isPaused = false
     )

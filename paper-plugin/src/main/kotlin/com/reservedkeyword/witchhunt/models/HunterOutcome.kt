@@ -1,8 +1,10 @@
 package com.reservedkeyword.witchhunt.models
 
 enum class HunterOutcome {
+    CANCELLED,
     DIED,
     DISCONNECTED,
-    KILLED_STREAMER,
-    TIMEOUT
+    HUNT_TIMEOUT,
+    JOIN_TIMEOUT,
+    KILLED_STREAMER
 }

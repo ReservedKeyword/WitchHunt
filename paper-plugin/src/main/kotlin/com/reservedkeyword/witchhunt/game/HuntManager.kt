@@ -7,6 +7,7 @@ import com.reservedkeyword.witchhunt.models.tracking.AttemptSummary
 import com.reservedkeyword.witchhunt.utils.broadcastPrefixedMessage
 import com.reservedkeyword.witchhunt.utils.minecraftDispatcher
 import com.reservedkeyword.witchhunt.utils.sendPrefixedMessage
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.format.NamedTextColor
@@ -14,37 +15,31 @@ import org.bukkit.GameMode
 import org.bukkit.GameRule
 import org.bukkit.entity.Player
 import java.time.Instant
-import java.util.concurrent.atomic.AtomicReference
 
 class HuntManager(private val plugin: WitchHuntPlugin) {
+    private val gameState = MutableStateFlow(HuntGameState())
     private val seedTracker = SeedTracker(plugin)
-    private val stateRef = AtomicReference<HuntGameState>(HuntGameState())
     private val worldManager = WorldManager(plugin)
 
     private var activeHuntSession: HuntSession? = null
 
-    val currentState: HuntGameState get() = stateRef.get()
+    val currentState: HuntGameState get() = gameState.value
 
     suspend fun clearActiveHuntSession() {
-        val updatedState = currentState.clearHuntSession()
-        stateRef.set(updatedState)
-
+        transitionState(GameEvent.HuntSessionCleared)
         activeHuntSession?.cancel()
         activeHuntSession = null
     }
 
     suspend fun endGame(attemptOutcome: AttemptOutcome) {
-        if (currentState.currentAttempt == null || !currentState.isActive) {
-            plugin.logger.warning("Attempted to end game, but no game is currently active")
+        val currentAttempt = currentState.currentAttempt
+
+        transitionState(GameEvent.End(attemptOutcome)).getOrElse { errorMessage ->
+            plugin.logger.warning(errorMessage.message)
             return
         }
 
-        val currentAttempt = currentState.currentAttempt!!
         clearActiveHuntSession()
-
-        val updatedState = currentState.withEndedAttempt(attemptOutcome)
-        stateRef.set(updatedState)
-        seedTracker.saveHistory(updatedState.attemptHistory)
 
         val outcomeText = when (attemptOutcome) {
             AttemptOutcome.CANCELLED -> "Cancelled"
@@ -70,7 +65,7 @@ class HuntManager(private val plugin: WitchHuntPlugin) {
             worldManager.resetWorld()
         }
 
-        plugin.logger.info("Game ended. Attempt #${currentAttempt.attemptNumber}, Outcome: $attemptOutcome")
+        plugin.logger.info("Game ended. Attempt #${currentAttempt?.attemptNumber ?: "unknown"}, Outcome: $attemptOutcome")
     }
 
     fun getAttemptSummary(): AttemptSummary = seedTracker.generateSummary(currentState.attemptHistory)
@@ -86,8 +81,8 @@ class HuntManager(private val plugin: WitchHuntPlugin) {
 
         val loadedHistory = seedTracker.loadHistory()
         val initialState = HuntGameState(attemptHistory = loadedHistory)
-        stateRef.set(initialState)
 
+        gameState.value = initialState
         plugin.logger.info("Loaded ${loadedHistory.size} attempt(s) from history")
     }
 
@@ -98,16 +93,12 @@ class HuntManager(private val plugin: WitchHuntPlugin) {
     fun isWorldReady(): Boolean = worldManager.isNextWorldReady()
 
     suspend fun pauseGame() {
-        if (!currentState.isActive || currentState.isPaused) {
-            plugin.logger.warning("Game cannot paused, it's not active or already paused")
+        transitionState(GameEvent.Pause).getOrElse { errorMessage ->
+            plugin.logger.warning(errorMessage.message)
             return
         }
 
-        plugin.logger.info("Pausing game...")
         clearActiveHuntSession()
-
-        val updatedState = currentState.withPaused()
-        stateRef.set(updatedState)
 
         val activeWorld = worldManager.currentState.activeWorld
 
@@ -134,23 +125,17 @@ class HuntManager(private val plugin: WitchHuntPlugin) {
         plugin.logger.info("Game paused successfully!")
     }
 
-    suspend fun recordHunterEncounter(hunterEncounter: HunterEncounter): HuntGameState {
-        val updatedState = currentState.withHunterEncounter(hunterEncounter)
-        stateRef.set(updatedState)
-        seedTracker.saveHistory(updatedState.attemptHistory)
-        return updatedState
+    suspend fun recordHunterEncounter(hunterEncounter: HunterEncounter) {
+        transitionState(GameEvent.HunterEncountered(hunterEncounter)).getOrElse { errorMessage ->
+            plugin.logger.warning(errorMessage.message)
+        }
     }
 
     suspend fun resumeGame() {
-        if (!currentState.isActive || !currentState.isPaused) {
-            plugin.logger.warning("Game cannot resume, it's already active or not paused")
+        transitionState(GameEvent.Resume).getOrElse { errorMessage ->
+            plugin.logger.warning(errorMessage.message)
             return
         }
-
-        plugin.logger.info("Resuming game...")
-
-        val updatedState = currentState.withResumed()
-        stateRef.set(updatedState)
 
         val activeWorld = worldManager.currentState.activeWorld
 
@@ -177,9 +162,8 @@ class HuntManager(private val plugin: WitchHuntPlugin) {
         plugin.logger.info("Game resumed successfully")
     }
 
-    fun setActiveHuntSession(huntSession: HuntSession, huntSessionState: HuntSessionState) {
-        val updatedState = currentState.withHuntSession(huntSessionState)
-        stateRef.set(updatedState)
+    suspend fun setActiveHuntSession(huntSession: HuntSession, huntSessionState: HuntSessionState) {
+        transitionState(GameEvent.HuntSessionStarted(huntSession, huntSessionState))
         activeHuntSession = huntSession
     }
 
@@ -190,24 +174,21 @@ class HuntManager(private val plugin: WitchHuntPlugin) {
     }
 
     suspend fun startNewGame(streamerPlayer: Player): GameAttempt? {
-        if (currentState.isActive) {
-            streamerPlayer.sendPrefixedMessage(Component.text("Game is already active!", NamedTextColor.RED))
-            return null
-        }
+        val transitionResult = transitionState(GameEvent.Start(streamerPlayer))
 
-        if (!worldManager.isNextWorldReady()) {
+        val updatedState = transitionResult.getOrElse { errorMessage ->
             streamerPlayer.sendPrefixedMessage(
                 Component.text(
-                    "World is still being pre-generated...",
-                    NamedTextColor.BLUE
+                    errorMessage.message ?: "Unknown error message",
+                    NamedTextColor.RED
                 )
             )
 
             return null
         }
 
-        val (worldState, worldSeed) = worldManager.activateNextWorld()
-        val world = worldState.activeWorld!!
+        val currentAttempt = updatedState.currentAttempt!!
+        val activeWorld = worldManager.currentState.activeWorld!!
 
         withContext(plugin.minecraftDispatcher()) {
             streamerPlayer.foodLevel = 20
@@ -216,37 +197,95 @@ class HuntManager(private val plugin: WitchHuntPlugin) {
             streamerPlayer.saturation = 20f
             streamerPlayer.giveExp(-streamerPlayer.totalExperience)
             streamerPlayer.inventory.clear()
-            streamerPlayer.teleport(world.spawnLocation)
+            streamerPlayer.teleport(activeWorld.spawnLocation)
         }
-
-        val attemptNumber = currentState.attemptHistory.size + 1
-
-        val gameAttempt = GameAttempt(
-            attemptNumber = attemptNumber,
-            seed = worldSeed,
-            startedAt = Instant.now(),
-            streamerName = streamerPlayer.name,
-            worldName = world.name
-        )
-
-        val updatedState = currentState.withNewAttempt(gameAttempt)
-        stateRef.set(updatedState)
 
         plugin.server.broadcastPrefixedMessage(
             Component.text(
-                "Run started! Attempt $attemptNumber",
+                "Run started! Attempt #${currentAttempt.attemptNumber}",
                 NamedTextColor.GREEN
             )
         )
 
         plugin.webhookClient.sendEvent(
             "game-started", mapOf(
-                "attemptNumber" to attemptNumber.toString(),
-                "worldSeed" to worldSeed.toString()
+                "attemptNumber" to currentAttempt.attemptNumber.toString(),
+                "worldSeed" to currentAttempt.seed.toString()
             )
         )
 
-        plugin.logger.info("New game started: Attempt #$attemptNumber, Seed: $worldSeed")
-        return gameAttempt
+        plugin.logger.info("New game started: Attempt #${currentAttempt.attemptNumber}, Seed: ${currentAttempt.seed}")
+        return currentAttempt
+    }
+
+    private suspend fun transitionState(gameEvent: GameEvent): Result<HuntGameState> {
+        val updatedState = when (gameEvent) {
+            is GameEvent.End -> {
+                if (currentState.currentAttempt == null || !currentState.isActive) {
+                    return Result.failure(IllegalStateException("Cannot end game, no active game in progress"))
+                }
+
+                currentState.withEndedAttempt(gameEvent.attemptOutcome)
+            }
+
+            is GameEvent.HuntSessionCleared -> {
+                currentState.clearHuntSession()
+            }
+
+            is GameEvent.HuntSessionStarted -> {
+                currentState.withHuntSession(gameEvent.huntSessionState)
+            }
+
+            is GameEvent.HunterEncountered -> {
+                if (!currentState.isActive) {
+                    return Result.failure(IllegalStateException("Cannot record hunter encounter, game is not active"))
+                }
+
+                currentState.withHunterEncounter(gameEvent.hunterEncounter)
+            }
+
+            is GameEvent.Pause -> {
+                if (!currentState.isActive || currentState.isPaused) {
+                    return Result.failure(IllegalStateException("Cannot pause game, game not active or is paused"))
+                }
+
+                currentState.withPaused()
+            }
+
+            is GameEvent.Resume -> {
+                if (!currentState.isActive || !currentState.isPaused) {
+                    return Result.failure(IllegalStateException("Cannot resume game, game is not active or is not paused"))
+                }
+
+                currentState.withResumed()
+            }
+
+            is GameEvent.Start -> {
+                if (currentState.isActive) {
+                    return Result.failure(IllegalStateException("Cannot start new game, game is already active"))
+                }
+
+                if (!worldManager.isNextWorldReady()) {
+                    return Result.failure(IllegalStateException("Cannot start game, next world is not currently ready."))
+                }
+
+                val attemptNumber = currentState.attemptHistory.size + 1
+                val (worldState, worldSeed) = worldManager.activateNextWorld()
+
+                val gameAttempt = GameAttempt(
+                    attemptNumber = attemptNumber,
+                    seed = worldSeed,
+                    startedAt = Instant.now(),
+                    streamerName = gameEvent.streamerPlayer.name,
+                    worldName = worldState.activeWorld!!.name
+                )
+
+                currentState.withNewAttempt(gameAttempt)
+            }
+        }
+
+        gameState.value = updatedState
+        seedTracker.saveHistory(updatedState.attemptHistory)
+        return Result.success(updatedState)
     }
 }

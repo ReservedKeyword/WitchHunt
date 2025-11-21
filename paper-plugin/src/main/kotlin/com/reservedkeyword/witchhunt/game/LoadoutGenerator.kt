@@ -17,9 +17,9 @@ class LoadoutGenerator(private val plugin: WitchHuntPlugin) {
     }
 
     private fun parseItemString(itemString: String): ItemStack? {
-        val strParts = itemString.split(":")
+        val strParts = itemString.split(":", limit = 2)
         val materialName = strParts[0].uppercase()
-        val materialAmount = if (strParts.size > 1) strParts[1].toIntOrNull() ?: 1 else 1
+        val materialAmount = strParts.getOrNull(1)?.toIntOrNull() ?: 1
 
         return try {
             val material = Material.valueOf(materialName)
@@ -32,7 +32,7 @@ class LoadoutGenerator(private val plugin: WitchHuntPlugin) {
     }
 
     private fun selectRandomItems(itemStringList: List<String>, count: Int): List<ItemStack> {
-        if (itemStringList.isEmpty()) return emptyList()
+        if (itemStringList.isEmpty() || count <= 0) return emptyList()
         val selectedItems = itemStringList.shuffled().take(count)
         return selectedItems.mapNotNull { parseItemString(it) }
     }

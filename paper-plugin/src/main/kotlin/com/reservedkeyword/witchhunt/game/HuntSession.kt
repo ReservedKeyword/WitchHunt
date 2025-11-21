@@ -7,10 +7,8 @@ import com.reservedkeyword.witchhunt.models.config.Config
 import com.reservedkeyword.witchhunt.utils.broadcastPrefixedMessage
 import com.reservedkeyword.witchhunt.utils.minecraftDispatcher
 import com.reservedkeyword.witchhunt.utils.sendPrefixedMessage
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.format.NamedTextColor
 import net.kyori.adventure.text.format.TextDecoration
@@ -30,33 +28,33 @@ class HuntSession(
     private val streamerPlayer: Player,
     private val twitchUsername: String
 ) {
+    private val sessionScope = CoroutineScope(plugin.asyncScope.coroutineContext + SupervisorJob())
+    private val sessionState = MutableStateFlow<SessionState>(SessionState.WaitingForJoin)
+
     private var hudStarted: Boolean = false
-    private var huntTimeoutJob: Job? = null
-    private var joinTime: Instant? = null
-    private var joinTimeoutJob: Job? = null
+
+    val currentState: SessionState get() = sessionState.value
+
+    private fun broadcastHunterDeath(hunterPlayer: Player) {
+        plugin.server.broadcastPrefixedMessage(
+            Component.text(
+                "Hunter ${hunterPlayer.name} has been eliminated!",
+                NamedTextColor.GREEN
+            )
+        )
+    }
 
     suspend fun cancel() {
-        huntTimeoutJob?.cancel()
-        joinTimeoutJob?.cancel()
+        transitionEvent(SessionEvent.Cancelled)
+        sessionScope.cancel()
 
         withContext(plugin.minecraftDispatcher()) {
-            if (hudStarted) {
-                val hunterPlayer = Bukkit.getPlayer(minecraftUsername)
-
-                plugin.hudManager.clear(
-                    hunterPlayer = hunterPlayer,
-                    streamerPlayer = streamerPlayer
-                )
-
-                plugin.hudManager.stopUpdates()
-            }
-
             val hunterPlayer = Bukkit.getPlayer(minecraftUsername)
 
             if (hunterPlayer != null) {
                 cleanupOnlineHunter(hunterPlayer)
             } else {
-                Bukkit.getOfflinePlayer(minecraftUsername).isWhitelisted = false
+                removeFromWhitelist()
                 plugin.webhookClient.sendEvent("hunter-left")
             }
         }
@@ -70,11 +68,12 @@ class HuntSession(
             )
 
             plugin.hudManager.stopUpdates()
+            hudStarted = false
         }
 
         withContext(plugin.minecraftDispatcher()) {
             hunterPlayer.kick(Component.text("Your hunt has ended!", NamedTextColor.DARK_RED, TextDecoration.BOLD))
-            Bukkit.getOfflinePlayer(minecraftUsername).isWhitelisted = false
+            removeFromWhitelist()
         }
 
         plugin.webhookClient.sendEvent("hunter-left")
@@ -97,22 +96,22 @@ class HuntSession(
     private suspend fun handleHuntTimeout() {
         plugin.logger.info("Hunt timed out for $twitchUsername ($minecraftUsername)")
 
-        val hunterEncounter = HunterEncounter(
-            endedAt = Instant.now(),
-            hunterMinecraftName = minecraftUsername,
-            hunterTwitchName = twitchUsername,
-            outcome = HunterOutcome.TIMEOUT
-        )
+        val updatedState = transitionEvent(SessionEvent.HuntTimedOut).getOrElse {
+            plugin.logger.warning("Failed to transition: ${it.message}")
+            return
+        }
 
-        plugin.huntManager.recordHunterEncounter(hunterEncounter)
+        if (updatedState is SessionState.Ended) {
+            recordEncounter(updatedState)
 
-        withContext(plugin.minecraftDispatcher()) {
-            val hunterPlayer = Bukkit.getPlayer(minecraftUsername)
+            withContext(plugin.minecraftDispatcher()) {
+                val hunterPlayer = Bukkit.getPlayer(minecraftUsername)
 
-            if (hunterPlayer != null) {
-                cleanupOnlineHunter(hunterPlayer)
-            } else {
-                Bukkit.getOfflinePlayer(minecraftUsername).isWhitelisted = false
+                if (hunterPlayer != null) {
+                    cleanupOnlineHunter(hunterPlayer)
+                } else {
+                    removeFromWhitelist()
+                }
             }
 
             plugin.server.broadcastPrefixedMessage(
@@ -127,63 +126,75 @@ class HuntSession(
     suspend fun handleHunterDeath(hunterPlayer: Player) {
         plugin.logger.info("Hunter ${hunterPlayer.name} has died")
 
-        val hunterEncounter = HunterEncounter(
-            endedAt = Instant.now(),
-            hunterMinecraftName = minecraftUsername,
-            hunterTwitchName = twitchUsername,
-            joinedAt = joinTime,
-            outcome = HunterOutcome.DIED
-        )
-
-        plugin.huntManager.recordHunterEncounter(hunterEncounter)
-        cleanupOnlineHunter(hunterPlayer)
-
-        plugin.server.broadcastPrefixedMessage(
-            Component.text(
-                "Hunter ${hunterPlayer.name} has been eliminated!",
-                NamedTextColor.GREEN
-            )
-        )
-    }
-
-    suspend fun handleHunterJoin(hunterPlayer: Player) {
-        plugin.logger.info("Hunter ${hunterPlayer.name} joined the server")
-        joinTimeoutJob?.cancel()
-        joinTime = Instant.now()
-
-        withContext(plugin.minecraftDispatcher()) {
-            setupHunter(hunterPlayer)
+        val updatedState = transitionEvent(SessionEvent.HunterDied(hunterPlayer)).getOrElse {
+            plugin.logger.warning("Failed to transition: ${it.message}")
+            return
         }
 
+        if (updatedState is SessionState.Ended) {
+            recordEncounter(updatedState)
+            cleanupOnlineHunter(hunterPlayer)
+            broadcastHunterDeath(hunterPlayer)
+        }
+    }
+
+    private fun startHudUpdates(hunterPlayer: Player, joinedAt: Instant) {
         plugin.hudManager.startUpdates(
             huntDurationMillis = config.timing.huntDurationMillis,
-            huntStartTime = joinTime ?: Instant.now(),
+            huntStartTime = joinedAt,
             hunterPlayer = hunterPlayer,
-            streamerPlayer = streamerPlayer,
+            streamerPlayer = streamerPlayer
         )
 
         hudStarted = true
-        startHuntTimeout()
+    }
 
-        plugin.webhookClient.sendEvent(
-            "hunter-joined",
-            mapOf("huntDurationMillis" to config.timing.huntDurationMillis.toString())
-        )
+
+    suspend fun handleHunterJoin(hunterPlayer: Player) {
+        plugin.logger.info("Hunter ${hunterPlayer.name} joined the server")
+
+        val updatedState = transitionEvent(SessionEvent.HunterJoined(hunterPlayer)).getOrElse { error ->
+            plugin.logger.warning("Failed to process hunter join: ${error.message}")
+            return
+        }
+
+        if (updatedState is SessionState.Active) {
+            withContext(plugin.minecraftDispatcher()) {
+                setupHunter(hunterPlayer, updatedState.spawnLocation)
+            }
+
+            startHudUpdates(
+                hunterPlayer = hunterPlayer,
+                joinedAt = updatedState.joinedAt
+            )
+
+            scheduleHuntTimeout()
+            notifyHunterJoined()
+        }
     }
 
     private suspend fun handleJoinTimeout() {
         plugin.logger.info("Join timed out for $twitchUsername ($minecraftUsername): did not show in time")
 
-        withContext(plugin.minecraftDispatcher()) {
-            Bukkit.getOfflinePlayer(minecraftUsername).isWhitelisted = false
+        transitionEvent(SessionEvent.JoinTimedOut).getOrElse {
+            plugin.logger.warning("Failed to transition: ${it.message}")
+            return
         }
 
+        removeFromWhitelist()
         plugin.huntManager.clearActiveHuntSession()
 
         if (plugin.configManager.getConfig().noShowBehavior.immediateReselect) {
             plugin.logger.info("Immediate reselect enabled, notify Twitch bot to send a new player...")
             notifyTwitchBot("no-show-immediate-reselect")
         }
+    }
+
+    private suspend fun notifyHunterJoined() {
+        plugin.webhookClient.sendEvent(
+            "hunter-joined",
+            mapOf("huntDurationMillis" to config.timing.huntDurationMillis.toString())
+        )
     }
 
     private suspend fun notifyTwitchBot(event: String, data: Map<String, String>? = null) {
@@ -194,6 +205,24 @@ class HuntSession(
         }
     }
 
+    private suspend fun recordEncounter(endedState: SessionState.Ended) {
+        val hunterEncounter = HunterEncounter(
+            endedAt = endedState.endedAt,
+            hunterMinecraftName = minecraftUsername,
+            hunterTwitchName = twitchUsername,
+            joinedAt = endedState.joinedAt,
+            outcome = endedState.hunterOutcome
+        )
+
+        plugin.huntManager.recordHunterEncounter(hunterEncounter)
+    }
+
+    private suspend fun removeFromWhitelist() {
+        withContext(plugin.minecraftDispatcher()) {
+            Bukkit.getOfflinePlayer(minecraftUsername).isWhitelisted = false
+        }
+    }
+
     suspend fun start() {
         plugin.logger.info("Hunt session started for $twitchUsername ($minecraftUsername)")
 
@@ -201,28 +230,22 @@ class HuntSession(
             Bukkit.getOfflinePlayer(minecraftUsername).isWhitelisted = true
         }
 
-        startJoinTimeout()
+        transitionEvent(SessionEvent.Started)
+        scheduleJoinTimeout()
     }
 
-    private fun setupHunter(hunterPlayer: Player) {
+    private fun setupHunter(hunterPlayer: Player, spawnLocation: Location) {
         hunterPlayer.inventory.clear()
-
         val itemsLoadout = LoadoutGenerator(plugin).generateLoadout()
-
-        itemsLoadout.forEach { item ->
-            hunterPlayer.inventory.addItem(item)
-        }
+        itemsLoadout.forEach { item -> hunterPlayer.inventory.addItem(item) }
 
         hunterPlayer.foodLevel = 20
         hunterPlayer.gameMode = GameMode.SURVIVAL
         hunterPlayer.health = 20.0
         hunterPlayer.saturation = 20f
+
         hunterPlayer.giveExp(-hunterPlayer.totalExperience)
-        hunterPlayer.inventory.clear()
-
-        val spawnLocation = generateSpawnLocation(streamerPlayer.location)
         hunterPlayer.teleport(spawnLocation)
-
 
         hunterPlayer.sendPrefixedMessage(
             Component.text(
@@ -241,17 +264,93 @@ class HuntSession(
         plugin.logger.info("Hunter ${hunterPlayer.name} spawned at ${spawnLocation.blockX}, ${spawnLocation.blockY}, ${spawnLocation.blockZ}")
     }
 
-    private fun startHuntTimeout() {
-        huntTimeoutJob = plugin.asyncScope.launch {
+    private fun scheduleHuntTimeout() {
+        sessionScope.launch {
             delay(config.timing.huntDurationMillis)
             handleHuntTimeout()
         }
     }
 
-    private fun startJoinTimeout() {
-        joinTimeoutJob = plugin.asyncScope.launch {
+    private fun scheduleJoinTimeout() {
+        sessionScope.launch {
             delay(config.timing.joinTimeoutMillis)
             handleJoinTimeout()
         }
+    }
+
+    private suspend fun transitionEvent(sessionEvent: SessionEvent): Result<SessionState> {
+        val current = currentState
+
+        val updatedState = when (sessionEvent) {
+            is SessionEvent.Cancelled -> {
+                val joinedAt = (current as? SessionState.Active)?.joinedAt
+
+                SessionState.Ended(
+                    endedAt = Instant.now(),
+                    hunterOutcome = HunterOutcome.CANCELLED,
+                    joinedAt = joinedAt
+                )
+            }
+
+            is SessionEvent.HuntTimedOut -> {
+                if (current !is SessionState.Active) {
+                    return Result.failure(IllegalStateException("No active hunt session to time out"))
+                }
+
+                SessionState.Ended(
+                    endedAt = Instant.now(),
+                    hunterOutcome = HunterOutcome.HUNT_TIMEOUT,
+                    joinedAt = current.joinedAt
+                )
+            }
+
+            is SessionEvent.HunterDied -> {
+                if (current !is SessionState.Active) {
+                    return Result.failure(IllegalStateException("No active hunt to end"))
+                }
+
+                SessionState.Ended(
+                    endedAt = Instant.now(),
+                    hunterOutcome = HunterOutcome.DIED,
+                    joinedAt = current.joinedAt
+                )
+            }
+
+            is SessionEvent.HunterJoined -> {
+                if (current !is SessionState.WaitingForJoin) {
+                    return Result.failure(IllegalStateException("Hunter already joined or session ended"))
+                }
+
+                val spawnLocation = generateSpawnLocation(streamerPlayer.location)
+
+                SessionState.Active(
+                    joinedAt = Instant.now(),
+                    spawnLocation = spawnLocation
+                )
+            }
+
+            is SessionEvent.JoinTimedOut -> {
+                if (current !is SessionState.WaitingForJoin) {
+                    return Result.failure(IllegalStateException("Joined already occurred or session ended"))
+                }
+
+                SessionState.Ended(
+                    endedAt = Instant.now(),
+                    hunterOutcome = HunterOutcome.JOIN_TIMEOUT,
+                    joinedAt = null
+                )
+            }
+
+            is SessionEvent.Started -> {
+                if (current !is SessionState.WaitingForJoin) {
+                    return Result.failure(IllegalStateException("Session already started"))
+                }
+
+                current
+            }
+        }
+
+        sessionState.value = updatedState
+        return Result.success(updatedState)
     }
 }
