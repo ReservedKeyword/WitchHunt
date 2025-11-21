@@ -1,0 +1,23 @@
+{
+  "type": "module",
+  "name": "witch-hunt-bun",
+  "private": true,
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "build": "bun build src/index.ts --outdir ./dist --target bun",
+    "start": "bun run dist/index.js"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/tmi.js": "^1.8.6",
+    "prettier": "^3.6.2",
+    "prettier-plugin-organize-imports": "^4.3.0"
+  },
+  "dependencies": {
+    "tmi.js": "^1.8.5",
+    "tslog": "^4.10.2"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}

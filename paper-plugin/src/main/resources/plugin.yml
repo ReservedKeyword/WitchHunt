@@ -1,0 +1,16 @@
+name: WitchHunt
+version: '1.0.0'
+main: com.reservedkeyword.witchhunt.WitchHuntPlugin
+api-version: '1.21'
+website: https://reservedkeyword.com
+
+commands:
+  hunt:
+    description: Witch Hunt game commands
+    usage: /hunt <lobby|start|status>
+    permission: witchhunt.admin
+
+permissions:
+  witchhunt.admin:
+    description: Allows use of hunt admin commands
+    default: op

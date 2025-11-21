@@ -1,0 +1,37 @@
+api:
+  port: 8080
+  twitchBotWebhookUrl: "http://localhost:3000/webhook"
+
+loadout:
+  armor:
+    - iron_helmet
+  items:
+    - ender_pearl:16
+  weapons:
+    - diamond_sword
+  itemsPerCategory: 2
+
+noShowBehavior:
+  immediateReselect: false
+
+restrictions:
+  canBreakBlocks: false
+  canOpenChests: false
+  canPlaceBlocks: false
+  canUseCrafting: false
+
+spawn:
+  radiusBlocks: 500
+
+streamer:
+  username: "ReservedKeyword"
+
+timing:
+  huntDuration: 3
+  joinTimeout: 1
+
+ui:
+  showDistanceToHunter: true
+  showHunterDistance: true
+  showHunterInfoToStreamer: true
+  showTimerToHunter: true
