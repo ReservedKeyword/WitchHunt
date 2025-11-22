@@ -24,7 +24,7 @@ class PlayerJoinListener(private val plugin: WitchHuntPlugin) : Listener {
 
         if (activeHuntSession != null) {
             plugin.asyncScope.launch {
-                activeHuntSession.handleHunterJoin(hunterPlayer)
+                activeHuntSession.handleHunterJoined(hunterPlayer)
             }
         }
     }

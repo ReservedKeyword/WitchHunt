@@ -17,12 +17,10 @@ class BlockPlaceListener(private val plugin: WitchHuntPlugin) : Listener {
     fun onBlockPlaced(event: BlockPlaceEvent) {
         val player = event.player
 
-        // Fall through if the player is not a hunter
         if (!plugin.playerRestrictions.isHunter(player)) {
             return
         }
 
-        // Cancel event if the hunter is not allowed to place blocks
         if (!plugin.playerRestrictions.canPlaceBlocks()) {
             event.isCancelled = true
             player.sendPrefixedMessage(Component.text("You cannot place blocks as the hunter!", NamedTextColor.RED))

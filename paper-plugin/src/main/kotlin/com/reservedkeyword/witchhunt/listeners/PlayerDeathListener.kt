@@ -17,7 +17,7 @@ class PlayerDeathListener(private val plugin: WitchHuntPlugin) : Listener {
 
         if (activeHuntSession != null) {
             plugin.asyncScope.launch {
-                activeHuntSession.handleHunterDeath(hunterPlayer)
+                activeHuntSession.handleHunterDied(hunterPlayer)
                 plugin.huntManager.clearActiveHuntSession()
             }
         }

@@ -58,6 +58,7 @@ class PlayerQuitListener(private val plugin: WitchHuntPlugin) : Listener {
 
     @EventHandler(priority = EventPriority.MONITOR)
     fun onPlayerQuit(event: PlayerQuitEvent) {
+        event.quitMessage(null)
         val player = event.player
         val streamerUsername = plugin.configManager.getConfig().streamerUsername
 

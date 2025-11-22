@@ -31,7 +31,9 @@ class HuntSession(
     private val sessionScope = CoroutineScope(plugin.asyncScope.coroutineContext + SupervisorJob())
     private val sessionState = MutableStateFlow<SessionState>(SessionState.WaitingForJoin)
 
+    private var huntTimeoutJob: Job? = null
     private var hudStarted: Boolean = false
+    private var joinTimeoutJob: Job? = null
 
     val currentState: SessionState get() = sessionState.value
 
@@ -93,7 +95,7 @@ class HuntSession(
         return Location(world, x, y, z)
     }
 
-    private suspend fun handleHuntTimeout() {
+    private suspend fun handleHuntTimedOut() {
         plugin.logger.info("Hunt timed out for $twitchUsername ($minecraftUsername)")
 
         val updatedState = transitionEvent(SessionEvent.HuntTimedOut).getOrElse {
@@ -123,7 +125,7 @@ class HuntSession(
         }
     }
 
-    suspend fun handleHunterDeath(hunterPlayer: Player) {
+    suspend fun handleHunterDied(hunterPlayer: Player) {
         plugin.logger.info("Hunter ${hunterPlayer.name} has died")
 
         val updatedState = transitionEvent(SessionEvent.HunterDied(hunterPlayer)).getOrElse {
@@ -150,8 +152,9 @@ class HuntSession(
     }
 
 
-    suspend fun handleHunterJoin(hunterPlayer: Player) {
+    suspend fun handleHunterJoined(hunterPlayer: Player) {
         plugin.logger.info("Hunter ${hunterPlayer.name} joined the server")
+        joinTimeoutJob?.cancel()
 
         val updatedState = transitionEvent(SessionEvent.HunterJoined(hunterPlayer)).getOrElse { error ->
             plugin.logger.warning("Failed to process hunter join: ${error.message}")
@@ -169,11 +172,11 @@ class HuntSession(
             )
 
             scheduleHuntTimeout()
-            notifyHunterJoined()
+            notifyTwitchBotHunterJoined()
         }
     }
 
-    private suspend fun handleJoinTimeout() {
+    private suspend fun handleJoinTimedOut() {
         plugin.logger.info("Join timed out for $twitchUsername ($minecraftUsername): did not show in time")
 
         transitionEvent(SessionEvent.JoinTimedOut).getOrElse {
@@ -190,7 +193,7 @@ class HuntSession(
         }
     }
 
-    private suspend fun notifyHunterJoined() {
+    private suspend fun notifyTwitchBotHunterJoined() {
         plugin.webhookClient.sendEvent(
             "hunter-joined",
             mapOf("huntDurationMillis" to config.timing.huntDurationMillis.toString())
@@ -217,10 +220,8 @@ class HuntSession(
         plugin.huntManager.recordHunterEncounter(hunterEncounter)
     }
 
-    private suspend fun removeFromWhitelist() {
-        withContext(plugin.minecraftDispatcher()) {
-            Bukkit.getOfflinePlayer(minecraftUsername).isWhitelisted = false
-        }
+    private suspend fun removeFromWhitelist() = withContext(plugin.minecraftDispatcher()) {
+        Bukkit.getOfflinePlayer(minecraftUsername).isWhitelisted = false
     }
 
     suspend fun start() {
@@ -243,7 +244,6 @@ class HuntSession(
         hunterPlayer.gameMode = GameMode.SURVIVAL
         hunterPlayer.health = 20.0
         hunterPlayer.saturation = 20f
-
         hunterPlayer.giveExp(-hunterPlayer.totalExperience)
         hunterPlayer.teleport(spawnLocation)
 
@@ -265,16 +265,26 @@ class HuntSession(
     }
 
     private fun scheduleHuntTimeout() {
-        sessionScope.launch {
+        if (huntTimeoutJob != null) {
+            huntTimeoutJob?.cancel()
+            plugin.logger.warning("Cancelled old hunt timeout. Why was this used more than once?")
+        }
+
+        huntTimeoutJob = sessionScope.launch {
             delay(config.timing.huntDurationMillis)
-            handleHuntTimeout()
+            handleHuntTimedOut()
         }
     }
 
     private fun scheduleJoinTimeout() {
-        sessionScope.launch {
+        if (joinTimeoutJob != null) {
+            huntTimeoutJob?.cancel()
+            plugin.logger.warning("Cancelled old job timeout. Why was this used more than once?")
+        }
+
+        joinTimeoutJob = sessionScope.launch {
             delay(config.timing.joinTimeoutMillis)
-            handleJoinTimeout()
+            handleJoinTimedOut()
         }
     }
 

@@ -76,6 +76,7 @@ class WitchHuntPlugin : JavaPlugin() {
         server.pluginManager.registerEvents(InventoryOpenListener(this), this)
         server.pluginManager.registerEvents(PlayerDeathListener(this), this)
         server.pluginManager.registerEvents(PlayerJoinListener(this), this)
+        server.pluginManager.registerEvents(PlayerPortalListener(this), this)
         server.pluginManager.registerEvents(PlayerQuitListener(this), this)
 
         getCommand("hunt")?.setExecutor(HuntCommand(this))

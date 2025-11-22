@@ -17,12 +17,10 @@ class CraftItemListener(private val plugin: WitchHuntPlugin) : Listener {
     fun onItemCrafted(event: CraftItemEvent) {
         val player = event.whoClicked
 
-        // Fall through if the player is not a hunter
         if (!plugin.playerRestrictions.isHunter(player.uniqueId)) {
             return
         }
 
-        // Cancel event if the hunter is not allowed to craft items
         if (!plugin.playerRestrictions.canUseCrafting()) {
             event.isCancelled = true
             player.sendPrefixedMessage(Component.text("You cannot craft as the hunter!", NamedTextColor.RED))

@@ -5,7 +5,6 @@ import com.reservedkeyword.witchhunt.game.HuntSession
 import com.reservedkeyword.witchhunt.models.HuntSessionState
 import com.reservedkeyword.witchhunt.models.http.api.HunterSelectionRequest
 import com.reservedkeyword.witchhunt.models.http.api.StatusResponse
-import com.reservedkeyword.witchhunt.models.http.api.SuccessResponse
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
@@ -13,7 +12,7 @@ import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import org.bukkit.Bukkit
+import org.bukkit.entity.Player
 import java.time.Instant
 
 fun Application.configureRouting(plugin: WitchHuntPlugin) {
@@ -21,13 +20,15 @@ fun Application.configureRouting(plugin: WitchHuntPlugin) {
         json()
     }
 
+    val selectionValidator = HunterSelectionValidator(plugin)
+
     routing {
         get("/api/health") {
             call.respond(HttpStatusCode.OK, mapOf("status" to "ok"))
         }
 
         get("/api/hunt/status") {
-            try {
+            call.handleRequest {
                 val huntStatus = StatusResponse(
                     currentAttempt = plugin.huntManager.getCurrentAttemptNumber(),
                     gameActive = plugin.huntManager.isGameActive(),
@@ -35,117 +36,79 @@ fun Application.configureRouting(plugin: WitchHuntPlugin) {
                 )
 
                 call.respond(HttpStatusCode.OK, huntStatus)
-            } catch (e: Exception) {
-                e.printStackTrace()
-
-                call.respond(
-                    HttpStatusCode.InternalServerError, SuccessResponse(
-                        success = false,
-                        message = e.message
-                    )
-                )
             }
         }
 
         post("/api/hunt/select") {
-            try {
-                val hunterSelectionRequest = call.receive<HunterSelectionRequest>()
-                plugin.logger.info("Received hunter selection: ${hunterSelectionRequest.twitchUsername}")
+            call.handleRequest {
+                val selectionRequest = call.receive<HunterSelectionRequest>()
+                plugin.logger.info("Received hunter selection request. Minecraft username: ${selectionRequest.minecraftUsername}, Twitch username: ${selectionRequest.twitchUsername}")
 
-                if (!plugin.huntManager.isGameActive()) {
-                    plugin.logger.warning("Failed to select hunter, no active game in progress")
-
-                    call.respond(
-                        HttpStatusCode.BadRequest, SuccessResponse(
-                            success = false,
-                            message = "No active game"
+                selectionValidator.validateGameState().getOrElse { error ->
+                    if (error is ValidationException) {
+                        call.respondError(
+                            statusCode = error.statueCode,
+                            message = error.message
                         )
-                    )
+                    } else {
+                        throw error
+                    }
 
-                    return@post
+                    return@handleRequest
                 }
 
-                if (plugin.huntManager.isGamePaused()) {
-                    plugin.logger.warning("Failed to select hunter, game is currently in a paused state")
-
-                    call.respond(
-                        HttpStatusCode.ServiceUnavailable, SuccessResponse(
-                            success = false,
-                            message = "Game is paused"
+                val streamerPlayer = selectionValidator.getStreamerPlayer().getOrElse { error ->
+                    if (error is ValidationException) {
+                        call.respondError(
+                            statusCode = error.statueCode,
+                            message = error.message
                         )
-                    )
+                    } else {
+                        throw error
+                    }
 
-                    return@post
+                    return@handleRequest
                 }
 
-                if (plugin.huntManager.currentState.activeHuntSession != null) {
-                    plugin.logger.warning("Failed to select hunter, an active hunt is already in progress")
-
-                    call.respond(
-                        HttpStatusCode.Conflict, SuccessResponse(
-                            success = false,
-                            message = "Hunt is already in progress"
-                        )
-                    )
-
-                    return@post
-                }
-
-                val streamerUsername = plugin.configManager.getConfig().streamerUsername
-                val streamerPlayer = Bukkit.getPlayer(streamerUsername)
-
-                if (streamerPlayer == null) {
-                    plugin.logger.warning("Failed to select hunter, streamer is currently not online")
-
-                    call.respond(
-                        HttpStatusCode.BadRequest, SuccessResponse(
-                            success = false,
-                            message = "Streamer not online"
-                        )
-                    )
-
-                    return@post
-                }
-
-                val huntSession = HuntSession(
-                    config = plugin.configManager.getConfig(),
-                    minecraftUsername = hunterSelectionRequest.minecraftUsername,
+                startHuntSession(
                     plugin = plugin,
-                    streamerPlayer = streamerPlayer,
-                    twitchUsername = hunterSelectionRequest.twitchUsername
+                    selectionRequest = selectionRequest,
+                    streamerPlayer = streamerPlayer
                 )
 
-                val huntSessionState = HuntSessionState(
-                    expiresAt = Instant.now().plusMillis(plugin.configManager.getConfig().timing.joinTimeoutMillis),
-                    hunterMinecraftName = hunterSelectionRequest.minecraftUsername,
-                    hunterTwitchName = hunterSelectionRequest.twitchUsername,
-                    startedAt = Instant.now()
-                )
-
-                plugin.huntManager.setActiveHuntSession(
-                    huntSession = huntSession,
-                    huntSessionState = huntSessionState
-                )
-
-                huntSession.start()
-                plugin.logger.info("Hunt session started for ${hunterSelectionRequest.twitchUsername}!")
-
-                call.respond(
-                    HttpStatusCode.OK, SuccessResponse(
-                        success = true,
-                        message = "Hunt session started"
-                    )
-                )
-            } catch (e: Exception) {
-                e.printStackTrace()
-
-                call.respond(
-                    HttpStatusCode.InternalServerError, SuccessResponse(
-                        success = false,
-                        message = e.message
-                    )
-                )
+                call.respondSuccess("Hunt session was started")
             }
         }
     }
+}
+
+private suspend fun startHuntSession(
+    plugin: WitchHuntPlugin,
+    selectionRequest: HunterSelectionRequest,
+    streamerPlayer: Player
+) {
+    val config = plugin.configManager.getConfig()
+
+    val huntSession = HuntSession(
+        config = config,
+        minecraftUsername = selectionRequest.minecraftUsername,
+        plugin = plugin,
+        streamerPlayer = streamerPlayer,
+        twitchUsername = selectionRequest.twitchUsername
+    )
+
+    val huntSessionState = HuntSessionState(
+        expiresAt = Instant.now().plusMillis(config.timing.joinTimeoutMillis),
+        hunterMinecraftName = selectionRequest.minecraftUsername,
+        hunterTwitchName = selectionRequest.twitchUsername,
+        startedAt = Instant.now()
+    )
+
+    plugin.huntManager.setActiveHuntSession(
+        huntSession = huntSession,
+        huntSessionState = huntSessionState
+    )
+
+    huntSession.start()
+    plugin.logger.info("Hunt session started for ${selectionRequest.twitchUsername} (Minecraft: ${selectionRequest.minecraftUsername})")
 }

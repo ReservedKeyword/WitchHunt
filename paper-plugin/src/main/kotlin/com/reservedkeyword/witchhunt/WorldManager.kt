@@ -5,15 +5,12 @@ import com.reservedkeyword.witchhunt.utils.asyncDispatcher
 import com.reservedkeyword.witchhunt.utils.broadcastPrefixedMessage
 import com.reservedkeyword.witchhunt.utils.minecraftDispatcher
 import com.reservedkeyword.witchhunt.utils.sendPrefixedMessage
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.format.NamedTextColor
 import org.bukkit.*
 import java.io.File
-import java.util.concurrent.atomic.AtomicReference
 
 class WorldManager(private val plugin: WitchHuntPlugin) {
     companion object {
@@ -21,11 +18,10 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
         const val LOBBY_WORLD_NAME = "lobby"
     }
 
-    private val stateRef = AtomicReference<WorldState?>(null)
+    private val worldScope = CoroutineScope(plugin.asyncScope.coroutineContext + SupervisorJob())
+    private val worldState = MutableStateFlow<WorldState?>(null)
 
-    private var pregenerationJob: Job? = null
-
-    val currentState: WorldState get() = stateRef.get() ?: throw IllegalStateException("World manager not initialized")
+    val currentState: WorldState get() = worldState.value ?: error("World manager not initialized")
 
     suspend fun activateNextWorld(): Pair<WorldState, Long> = withContext(plugin.asyncDispatcher()) {
         val worldToActive = currentState.nextWorld ?: run {
@@ -33,29 +29,28 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
             createHardcoreWorldWithSeed().first
         }
 
-        val updatedState = currentState.withActiveWorld(worldToActive)
-        stateRef.set(updatedState)
-
-        val seed = worldToActive.seed
-        plugin.logger.info("Activated world: ${worldToActive.name} (seed: $seed)")
-
-        return@withContext Pair(updatedState, seed)
+        updateState { it.withActiveWorld(worldToActive) }
+        val worldSeed = worldToActive.seed
+        plugin.logger.info("Activated world: ${worldToActive.name} (seed: $worldSeed)")
+        Pair(currentState, worldSeed)
     }
 
-    private suspend fun cleanupOldHardcoreWorlds() = withContext(plugin.asyncDispatcher()) {
-        plugin.logger.info("Cleaning up old hardcore worlds...")
+    private fun cleanupOldHardcoreWorlds() {
+        worldScope.launch {
+            plugin.logger.info("Cleaning up old hardcore worlds...")
 
-        val worldContainer = Bukkit.getWorldContainer()
-        val hardcoreWorlds = worldContainer.listFiles()
-            ?.filter { it.isDirectory && it.name.startsWith(HARDCORE_PREFIX) }
-            ?: emptyList()
+            val worldContainer = Bukkit.getWorldContainer()
+            val hardcoreWorlds = worldContainer.listFiles()
+                ?.filter { it.isDirectory && (it.name.startsWith(HARDCORE_PREFIX) || it.name.contains("${HARDCORE_PREFIX}\\d+_(nether|the_end)".toRegex())) }
+                ?: emptyList()
 
-        hardcoreWorlds.forEach { worldDir ->
-            plugin.logger.info("Removing old hardcore world: ${worldDir.name}")
-            worldDir.deleteRecursively()
+            hardcoreWorlds.forEach { worldDir ->
+                plugin.logger.info("Removing old hardcore world: ${worldDir.name}")
+                worldDir.deleteRecursively()
+            }
+
+            plugin.logger.info("Cleanup complete. Removed ${hardcoreWorlds.size} old world(s).")
         }
-
-        plugin.logger.info("Cleanup complete. Removed ${hardcoreWorlds.size} old world(s).")
     }
 
     private suspend fun configureHardcoreWorld(hardcoreWorld: World) = withContext(plugin.minecraftDispatcher()) {
@@ -78,27 +73,52 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
         lobbyWorld.time = 6000 // Noon
     }
 
+    private suspend fun createHardcoreWorldDimensions(baseName: String, worldSeed: Long): Triple<World, World, World> {
+        return withContext(plugin.minecraftDispatcher()) {
+            val overworldCreator = WorldCreator(baseName)
+                .environment(World.Environment.NORMAL)
+                .generateStructures(true)
+                .hardcore(true)
+                .seed(worldSeed)
+                .type(WorldType.NORMAL)
+
+            val overworldWorld = overworldCreator.createWorld()
+                ?: throw IllegalStateException("Failed to create hardcore overworld for: $baseName")
+
+            val netherCreator = WorldCreator("${baseName}_nether")
+                .environment(World.Environment.NETHER)
+                .generateStructures(true)
+                .hardcore(true)
+                .seed(worldSeed)
+
+            val netherWorld = netherCreator.createWorld()
+                ?: throw IllegalStateException("Failed to create hardcore nether for: $baseName")
+
+            val endCreator = WorldCreator("${baseName}_the_end")
+                .environment(World.Environment.THE_END)
+                .generateStructures(true)
+                .hardcore(true)
+                .seed(worldSeed)
+
+            val endWorld =
+                endCreator.createWorld() ?: throw IllegalStateException("Failed to create hardcore end for: $baseName")
+
+            configureHardcoreWorld(overworldWorld)
+            plugin.logger.info("Created all dimensions for $baseName")
+            Triple(overworldWorld, netherWorld, endWorld)
+        }
+    }
+
     private suspend fun createHardcoreWorldWithSeed(): Pair<World, Long> = withContext(plugin.minecraftDispatcher()) {
-        val seed = System.currentTimeMillis()
         val attemptNumber = getNextAttemptName()
         val worldName = "$HARDCORE_PREFIX$attemptNumber"
+        val worldSeed = System.currentTimeMillis()
 
-        plugin.logger.info("Creating hardcore world, $worldName, with seed, $seed")
+        plugin.logger.info("Creating hardcore world, $worldName, with seed, $worldSeed")
 
-        val worldCreator = WorldCreator(worldName)
-            .environment(World.Environment.NORMAL)
-            .generateStructures(true)
-            .hardcore(true)
-            .seed(seed)
-            .type(WorldType.NORMAL)
-
-        val createdWorld =
-            worldCreator.createWorld() ?: throw IllegalStateException("Failed to create hardcore world: $worldName")
-
-        configureHardcoreWorld(createdWorld)
-
-        plugin.logger.info("Created hardcore world")
-        Pair(createdWorld, seed)
+        val (overworldWorld, _, _) = createHardcoreWorldDimensions(worldName, worldSeed)
+        plugin.logger.info("Successfully created hardcore world!")
+        Pair(overworldWorld, worldSeed)
     }
 
     private suspend fun deleteLobbyDimensions() = withContext(plugin.asyncDispatcher()) {
@@ -121,21 +141,27 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
         try {
             plugin.logger.info("Deleting world, $worldName")
 
-            val world = Bukkit.getWorld(worldName)
+            val worldDimensions = listOf(worldName, "${worldName}_nether", "${worldName}_the_end")
 
-            if (world != null) {
-                withContext(plugin.minecraftDispatcher()) {
-                    Bukkit.unloadWorld(world, false)
+            // Unload all worlds before deleting
+            worldDimensions.forEach { dimensionName ->
+                val world = Bukkit.getWorld(dimensionName)
+
+                if (world != null) {
+                    withContext(plugin.minecraftDispatcher()) {
+                        Bukkit.unloadWorld(world, false)
+                    }
                 }
-
-                delay(1000)
             }
 
-            val worldFolder = File(Bukkit.getWorldContainer(), worldName)
+            // Delete all the world directories
+            worldDimensions.forEach { dimensionName ->
+                val worldDir = File(Bukkit.getWorldContainer(), dimensionName)
 
-            if (worldFolder.exists()) {
-                worldFolder.deleteRecursively()
-                plugin.logger.info("World folder deleted, $worldName")
+                if (worldDir.exists()) {
+                    worldDir.deleteRecursively()
+                    plugin.logger.info("World directory deleted: $worldDir")
+                }
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -159,7 +185,7 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
         cleanupOldHardcoreWorlds()
 
         val initialState = WorldState(lobbyWorld = lobbyWorld)
-        stateRef.set(initialState)
+        worldState.value = initialState
 
         pregenerateNextWorld()
 
@@ -206,23 +232,19 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
     }
 
     private fun pregenerateNextWorld() {
-        pregenerationJob?.cancel()
-
-        pregenerationJob = plugin.asyncScope.launch {
-            stateRef.set(currentState.withPregenerationStarted())
+        worldScope.launch {
+            updateState { it.withPregenerationStarted() }
 
             try {
-                plugin.logger.info("Pre-generating next world...")
+                plugin.logger.info("Pre-generating next hardcore world...")
 
-                val (world, seed) = withContext(plugin.minecraftDispatcher()) {
+                val (world, worldSeed) = withContext(plugin.minecraftDispatcher()) {
                     createHardcoreWorldWithSeed()
                 }
 
                 preloadSpawnChunks(world)
-
-                val updatedState = currentState.withNextWorld(world)
-                stateRef.set(updatedState)
-                plugin.logger.info("World ${world.name} pre-generated successfully (seed: $seed)")
+                updateState { it.withNextWorld(world) }
+                plugin.logger.info("World ${world.name} pre-generated (seed: $worldSeed).")
 
                 withContext(plugin.minecraftDispatcher()) {
                     plugin.server.broadcastPrefixedMessage(
@@ -234,8 +256,7 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
-                val updatedState = currentState.copy(pregenerationInProgress = false)
-                stateRef.set(updatedState)
+                updateState { it.copy(pregenerationInProgress = false) }
             }
         }
     }
@@ -259,7 +280,7 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
         plugin.logger.info("Spawn chunks loaded for ${world.name}!")
     }
 
-    suspend fun resetWorld(): WorldState {
+    suspend fun resetWorld() {
         plugin.logger.info("Resetting world...")
 
         moveAllPlayersToLobby(currentState.lobbyWorld)
@@ -271,13 +292,17 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
             deleteWorldAsync(oldWorld.name)
         }
 
-        val updatedState = currentState.clearActiveWorld()
-        stateRef.set(updatedState)
-        return updatedState
+        updateState { it.clearActiveWorld() }
     }
 
     fun shutdown() {
-        pregenerationJob?.cancel()
+        worldScope.cancel()
         plugin.logger.info("World manager shut down!")
+    }
+
+    private fun updateState(updateFn: (WorldState) -> WorldState) {
+        worldState.value?.let { currentWorldState ->
+            worldState.value = updateFn(currentWorldState)
+        }
     }
 }
