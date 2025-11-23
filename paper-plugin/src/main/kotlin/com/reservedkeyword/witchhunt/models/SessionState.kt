@@ -1,6 +1,5 @@
-package com.reservedkeyword.witchhunt.game
+package com.reservedkeyword.witchhunt.models
 
-import com.reservedkeyword.witchhunt.models.HunterOutcome
 import org.bukkit.Location
 import java.time.Instant
 

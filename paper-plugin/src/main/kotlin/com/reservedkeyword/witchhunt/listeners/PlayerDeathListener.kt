@@ -32,9 +32,21 @@ class PlayerDeathListener(private val plugin: WitchHuntPlugin) : Listener {
 
         plugin.logger.info("Streamer ${streamerPlayer.name} died, ending game...")
 
+        val killerPlayer = streamerPlayer.killer
+        val wasKilledByHunter = killerPlayer != null && plugin.playerRestrictions.isHunter(killerPlayer)
+
         plugin.asyncScope.launch {
             try {
                 delay(3000)
+
+                if (wasKilledByHunter) {
+                    val activeHuntSession = plugin.huntManager.getActiveHuntSession()
+
+                    activeHuntSession?.handleHunterKilledStreamer(
+                        hunterPlayer = killerPlayer,
+                        streamerPlayer = streamerPlayer
+                    )
+                }
                 plugin.huntManager.endGame(AttemptOutcome.DEATH)
             } catch (e: Exception) {
                 e.printStackTrace()

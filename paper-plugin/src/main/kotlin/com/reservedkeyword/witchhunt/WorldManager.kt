@@ -16,6 +16,8 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
     companion object {
         const val HARDCORE_PREFIX = "hardcore_"
         const val LOBBY_WORLD_NAME = "lobby"
+
+        const val WORLD_NOON_TIME = 6000L
     }
 
     private val worldScope = CoroutineScope(plugin.asyncScope.coroutineContext + SupervisorJob())
@@ -59,9 +61,6 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
         hardcoreWorld.setGameRule(GameRule.DO_IMMEDIATE_RESPAWN, false)
         hardcoreWorld.setGameRule(GameRule.DO_MOB_SPAWNING, true)
         hardcoreWorld.setSpawnFlags(true, true)
-
-        hardcoreWorld.worldBorder.center = hardcoreWorld.spawnLocation
-        hardcoreWorld.worldBorder.size = 10000.0 // Make this customizable in the future, maybe?
     }
 
     private suspend fun configureLobbyWorld(lobbyWorld: World) = withContext(plugin.minecraftDispatcher()) {
@@ -70,7 +69,7 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
         lobbyWorld.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, false)
         lobbyWorld.setGameRule(GameRule.DO_MOB_SPAWNING, false)
         lobbyWorld.setGameRule(GameRule.DO_WEATHER_CYCLE, false)
-        lobbyWorld.time = 6000 // Noon
+        lobbyWorld.time = WORLD_NOON_TIME
     }
 
     private suspend fun createHardcoreWorldDimensions(baseName: String, worldSeed: Long): Triple<World, World, World> {
@@ -104,7 +103,7 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
                 endCreator.createWorld() ?: throw IllegalStateException("Failed to create hardcore end for: $baseName")
 
             configureHardcoreWorld(overworldWorld)
-            plugin.logger.info("Created all dimensions for $baseName")
+            plugin.logger.info("Created Overworld, Nether, and The End dimensions for $baseName")
             Triple(overworldWorld, netherWorld, endWorld)
         }
     }
@@ -115,56 +114,59 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
         val worldSeed = System.currentTimeMillis()
 
         plugin.logger.info("Creating hardcore world, $worldName, with seed, $worldSeed")
-
         val (overworldWorld, _, _) = createHardcoreWorldDimensions(worldName, worldSeed)
         plugin.logger.info("Successfully created hardcore world!")
         Pair(overworldWorld, worldSeed)
     }
 
-    private suspend fun deleteLobbyDimensions() = withContext(plugin.asyncDispatcher()) {
-        val worldContainer = Bukkit.getWorldContainer()
-        val endFolder = File(worldContainer, "${LOBBY_WORLD_NAME}_the_end")
-        val netherFolder = File(worldContainer, "${LOBBY_WORLD_NAME}_nether")
+    private suspend fun deleteLobbyDimensions() {
+        withContext(plugin.asyncDispatcher()) {
+            val worldContainer = Bukkit.getWorldContainer()
+            val endFolder = File(worldContainer, "${LOBBY_WORLD_NAME}_the_end")
+            val netherFolder = File(worldContainer, "${LOBBY_WORLD_NAME}_nether")
 
-        if (endFolder.exists()) {
-            endFolder.deleteRecursively()
-            plugin.logger.info("Lobby End deleted recursively")
-        }
+            if (endFolder.exists()) {
+                endFolder.deleteRecursively()
+                plugin.logger.info("Lobby End deleted recursively")
+            }
 
-        if (netherFolder.exists()) {
-            netherFolder.deleteRecursively()
-            plugin.logger.info("Lobby Nether deleted recursively")
+            if (netherFolder.exists()) {
+                netherFolder.deleteRecursively()
+                plugin.logger.info("Lobby Nether deleted recursively")
+            }
         }
     }
 
-    private suspend fun deleteWorldAsync(worldName: String) = withContext(plugin.asyncDispatcher()) {
-        try {
-            plugin.logger.info("Deleting world, $worldName")
+    private suspend fun deleteWorldAsync(worldName: String) {
+        withContext(plugin.asyncDispatcher()) {
+            try {
+                plugin.logger.info("Deleting world, $worldName")
 
-            val worldDimensions = listOf(worldName, "${worldName}_nether", "${worldName}_the_end")
+                val worldDimensions = listOf(worldName, "${worldName}_nether", "${worldName}_the_end")
 
-            // Unload all worlds before deleting
-            worldDimensions.forEach { dimensionName ->
-                val world = Bukkit.getWorld(dimensionName)
+                // Unload all worlds before deleting
+                worldDimensions.forEach { dimensionName ->
+                    val world = Bukkit.getWorld(dimensionName)
 
-                if (world != null) {
-                    withContext(plugin.minecraftDispatcher()) {
-                        Bukkit.unloadWorld(world, false)
+                    if (world != null) {
+                        withContext(plugin.minecraftDispatcher()) {
+                            Bukkit.unloadWorld(world, false)
+                        }
                     }
                 }
-            }
 
-            // Delete all the world directories
-            worldDimensions.forEach { dimensionName ->
-                val worldDir = File(Bukkit.getWorldContainer(), dimensionName)
+                // Delete all the world directories
+                worldDimensions.forEach { dimensionName ->
+                    val worldDir = File(Bukkit.getWorldContainer(), dimensionName)
 
-                if (worldDir.exists()) {
-                    worldDir.deleteRecursively()
-                    plugin.logger.info("World directory deleted: $worldDir")
+                    if (worldDir.exists()) {
+                        worldDir.deleteRecursively()
+                        plugin.logger.info("World directory deleted: $worldDir")
+                    }
                 }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
         }
     }
 
@@ -211,23 +213,25 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
         val createdWorld = worldCreator.createWorld() ?: throw IllegalStateException("Failed to create lobby world!")
         configureLobbyWorld(createdWorld)
         deleteLobbyDimensions()
-        plugin.logger.info("Lobby world created")
+        plugin.logger.info("Lobby world successfully created")
         return createdWorld
     }
 
-    private suspend fun moveAllPlayersToLobby(lobbyWorld: World) = withContext(plugin.minecraftDispatcher()) {
-        val spawnLocation = lobbyWorld.spawnLocation
+    private suspend fun moveAllPlayersToLobby(lobbyWorld: World) {
+        withContext(plugin.minecraftDispatcher()) {
+            val spawnLocation = lobbyWorld.spawnLocation
 
-        Bukkit.getOnlinePlayers().forEach { player ->
-            player.teleport(spawnLocation)
-            player.gameMode = GameMode.ADVENTURE
+            Bukkit.getOnlinePlayers().forEach { player ->
+                player.teleport(spawnLocation)
+                player.gameMode = GameMode.ADVENTURE
 
-            player.sendPrefixedMessage(
-                Component.text(
-                    "World is resetting, you have been moved to the lobby.",
-                    NamedTextColor.BLUE
+                player.sendPrefixedMessage(
+                    Component.text(
+                        "World is resetting, you have been moved to the lobby.",
+                        NamedTextColor.BLUE
+                    )
                 )
-            )
+            }
         }
     }
 
@@ -261,23 +265,25 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
         }
     }
 
-    private suspend fun preloadSpawnChunks(world: World) = withContext(plugin.asyncDispatcher()) {
-        val spawnLocation = world.spawnLocation
-        val chunkX = spawnLocation.blockX shr 4
-        val chunkZ = spawnLocation.blockZ shr 4
-        val radius = 5
+    private suspend fun preloadSpawnChunks(world: World) {
+        withContext(plugin.asyncDispatcher()) {
+            val spawnLocation = world.spawnLocation
+            val chunkX = spawnLocation.blockX shr 4
+            val chunkZ = spawnLocation.blockZ shr 4
+            val radius = 5
 
-        plugin.logger.info("Pre-loading spawn chunks for ${world.name}...")
+            plugin.logger.info("Pre-loading spawn chunks for ${world.name}...")
 
-        for (x in -radius..radius) {
-            for (z in -radius..radius) {
-                withContext(plugin.minecraftDispatcher()) {
-                    world.getChunkAtAsync(chunkX + x, chunkZ + z)
+            for (x in -radius..radius) {
+                for (z in -radius..radius) {
+                    withContext(plugin.minecraftDispatcher()) {
+                        world.getChunkAtAsync(chunkX + x, chunkZ + z)
+                    }
                 }
             }
-        }
 
-        plugin.logger.info("Spawn chunks loaded for ${world.name}!")
+            plugin.logger.info("Spawn chunks loaded for ${world.name}!")
+        }
     }
 
     suspend fun resetWorld() {

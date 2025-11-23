@@ -1,8 +1,6 @@
-package com.reservedkeyword.witchhunt.game
+package com.reservedkeyword.witchhunt.models
 
-import com.reservedkeyword.witchhunt.models.AttemptOutcome
-import com.reservedkeyword.witchhunt.models.HuntSessionState
-import com.reservedkeyword.witchhunt.models.HunterEncounter
+import com.reservedkeyword.witchhunt.game.HuntSession
 import org.bukkit.entity.Player
 
 sealed class GameEvent {

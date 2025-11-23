@@ -3,6 +3,7 @@ package com.reservedkeyword.witchhunt.game
 import com.reservedkeyword.witchhunt.WitchHuntPlugin
 import com.reservedkeyword.witchhunt.WorldManager
 import com.reservedkeyword.witchhunt.models.*
+import com.reservedkeyword.witchhunt.models.http.webhook.WebhookEvent
 import com.reservedkeyword.witchhunt.models.tracking.AttemptSummary
 import com.reservedkeyword.witchhunt.utils.broadcastPrefixedMessage
 import com.reservedkeyword.witchhunt.utils.minecraftDispatcher
@@ -34,8 +35,8 @@ class HuntManager(private val plugin: WitchHuntPlugin) {
     suspend fun endGame(attemptOutcome: AttemptOutcome) {
         val currentAttempt = currentState.currentAttempt
 
-        transitionState(GameEvent.End(attemptOutcome)).getOrElse { errorMessage ->
-            plugin.logger.warning(errorMessage.message)
+        transitionState(GameEvent.End(attemptOutcome)).getOrElse {
+            plugin.logger.warning(it.message)
             return
         }
 
@@ -56,9 +57,9 @@ class HuntManager(private val plugin: WitchHuntPlugin) {
         )
 
         when (attemptOutcome) {
-            AttemptOutcome.DEATH -> plugin.webhookClient.sendEvent("streamer-died")
-            AttemptOutcome.VICTORY -> plugin.webhookClient.sendEvent("streamer-victory")
-            else -> plugin.webhookClient.sendEvent("game-ended")
+            AttemptOutcome.DEATH -> plugin.webhookClient.sendEvent(WebhookEvent.StreamerDied)
+            AttemptOutcome.VICTORY -> plugin.webhookClient.sendEvent(WebhookEvent.StreamerVictory)
+            else -> plugin.webhookClient.sendEvent(WebhookEvent.GameEnded)
         }
 
         if (attemptOutcome != AttemptOutcome.VICTORY) {
@@ -93,8 +94,8 @@ class HuntManager(private val plugin: WitchHuntPlugin) {
     fun isWorldReady(): Boolean = worldManager.isNextWorldReady()
 
     suspend fun pauseGame() {
-        transitionState(GameEvent.Pause).getOrElse { errorMessage ->
-            plugin.logger.warning(errorMessage.message)
+        transitionState(GameEvent.Pause).getOrElse {
+            plugin.logger.warning(it.message)
             return
         }
 
@@ -110,8 +111,8 @@ class HuntManager(private val plugin: WitchHuntPlugin) {
         }
 
         plugin.webhookClient.sendEvent(
-            "game-paused", mapOf(
-                "attempt" to (currentState.currentAttempt?.attemptNumber?.toString() ?: "unknown")
+            WebhookEvent.GamePaused(
+                attemptNumber = currentState.currentAttempt?.attemptNumber ?: -1
             )
         )
 
@@ -126,14 +127,14 @@ class HuntManager(private val plugin: WitchHuntPlugin) {
     }
 
     suspend fun recordHunterEncounter(hunterEncounter: HunterEncounter) {
-        transitionState(GameEvent.HunterEncountered(hunterEncounter)).getOrElse { errorMessage ->
-            plugin.logger.warning(errorMessage.message)
+        transitionState(GameEvent.HunterEncountered(hunterEncounter)).getOrElse {
+            plugin.logger.warning(it.message)
         }
     }
 
     suspend fun resumeGame() {
-        transitionState(GameEvent.Resume).getOrElse { errorMessage ->
-            plugin.logger.warning(errorMessage.message)
+        transitionState(GameEvent.Resume).getOrElse {
+            plugin.logger.warning(it.message)
             return
         }
 
@@ -147,8 +148,8 @@ class HuntManager(private val plugin: WitchHuntPlugin) {
         }
 
         plugin.webhookClient.sendEvent(
-            "game-resumed", mapOf(
-                "attempt" to (currentState.currentAttempt?.attemptNumber?.toString() ?: "unknown")
+            WebhookEvent.GameResumed(
+                attemptNumber = currentState.currentAttempt?.attemptNumber ?: -1
             )
         )
 
@@ -198,6 +199,11 @@ class HuntManager(private val plugin: WitchHuntPlugin) {
             streamerPlayer.giveExp(-streamerPlayer.totalExperience)
             streamerPlayer.inventory.clear()
             streamerPlayer.teleport(activeWorld.spawnLocation)
+
+            // There are some times that *can* pass between when the world was generated
+            // and when it's used, so this ensures that when a new game starts, the world
+            // will reset to noon time, as a convenience!
+            activeWorld.time = WorldManager.WORLD_NOON_TIME
         }
 
         plugin.server.broadcastPrefixedMessage(
@@ -208,9 +214,9 @@ class HuntManager(private val plugin: WitchHuntPlugin) {
         )
 
         plugin.webhookClient.sendEvent(
-            "game-started", mapOf(
-                "attemptNumber" to currentAttempt.attemptNumber.toString(),
-                "worldSeed" to currentAttempt.seed.toString()
+            WebhookEvent.GameStarted(
+                attemptNumber = currentAttempt.attemptNumber,
+                worldSeed = currentAttempt.seed
             )
         )
 
