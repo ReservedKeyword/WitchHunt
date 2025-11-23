@@ -25,16 +25,18 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
 
     val currentState: WorldState get() = worldState.value ?: error("World manager not initialized")
 
-    suspend fun activateNextWorld(): Pair<WorldState, Long> = withContext(plugin.asyncDispatcher()) {
-        val worldToActive = currentState.nextWorld ?: run {
-            plugin.logger.warning("Next world not ready! Generating now...")
-            createHardcoreWorldWithSeed().first
-        }
+    suspend fun activateNextWorld(): Pair<WorldState, Long> {
+        return withContext(plugin.asyncDispatcher()) {
+            val worldToActive = currentState.nextWorld ?: run {
+                plugin.logger.warning("Next world not ready! Generating now...")
+                createHardcoreWorldWithSeed().first
+            }
 
-        updateState { it.withActiveWorld(worldToActive) }
-        val worldSeed = worldToActive.seed
-        plugin.logger.info("Activated world: ${worldToActive.name} (seed: $worldSeed)")
-        Pair(currentState, worldSeed)
+            updateState { it.withActiveWorld(worldToActive) }
+            val worldSeed = worldToActive.seed
+            plugin.logger.info("Activated world: ${worldToActive.name} (seed: $worldSeed)")
+            Pair(currentState, worldSeed)
+        }
     }
 
     private fun cleanupOldHardcoreWorlds() {
@@ -55,21 +57,25 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
         }
     }
 
-    private suspend fun configureHardcoreWorld(hardcoreWorld: World) = withContext(plugin.minecraftDispatcher()) {
-        hardcoreWorld.setGameRule(GameRule.ANNOUNCE_ADVANCEMENTS, true)
-        hardcoreWorld.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, true)
-        hardcoreWorld.setGameRule(GameRule.DO_IMMEDIATE_RESPAWN, false)
-        hardcoreWorld.setGameRule(GameRule.DO_MOB_SPAWNING, true)
-        hardcoreWorld.setSpawnFlags(true, true)
+    private suspend fun configureHardcoreWorld(hardcoreWorld: World) {
+        withContext(plugin.minecraftDispatcher()) {
+            hardcoreWorld.setGameRule(GameRule.ANNOUNCE_ADVANCEMENTS, true)
+            hardcoreWorld.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, true)
+            hardcoreWorld.setGameRule(GameRule.DO_IMMEDIATE_RESPAWN, false)
+            hardcoreWorld.setGameRule(GameRule.DO_MOB_SPAWNING, true)
+            hardcoreWorld.setSpawnFlags(true, true)
+        }
     }
 
-    private suspend fun configureLobbyWorld(lobbyWorld: World) = withContext(plugin.minecraftDispatcher()) {
-        lobbyWorld.difficulty = Difficulty.PEACEFUL
-        lobbyWorld.setGameRule(GameRule.ANNOUNCE_ADVANCEMENTS, false)
-        lobbyWorld.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, false)
-        lobbyWorld.setGameRule(GameRule.DO_MOB_SPAWNING, false)
-        lobbyWorld.setGameRule(GameRule.DO_WEATHER_CYCLE, false)
-        lobbyWorld.time = WORLD_NOON_TIME
+    private suspend fun configureLobbyWorld(lobbyWorld: World) {
+        withContext(plugin.minecraftDispatcher()) {
+            lobbyWorld.difficulty = Difficulty.PEACEFUL
+            lobbyWorld.setGameRule(GameRule.ANNOUNCE_ADVANCEMENTS, false)
+            lobbyWorld.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, false)
+            lobbyWorld.setGameRule(GameRule.DO_MOB_SPAWNING, false)
+            lobbyWorld.setGameRule(GameRule.DO_WEATHER_CYCLE, false)
+            lobbyWorld.time = WORLD_NOON_TIME
+        }
     }
 
     private suspend fun createHardcoreWorldDimensions(baseName: String, worldSeed: Long): Triple<World, World, World> {
@@ -77,7 +83,6 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
             val overworldCreator = WorldCreator(baseName)
                 .environment(World.Environment.NORMAL)
                 .generateStructures(true)
-                .hardcore(true)
                 .seed(worldSeed)
                 .type(WorldType.NORMAL)
 
@@ -87,7 +92,6 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
             val netherCreator = WorldCreator("${baseName}_nether")
                 .environment(World.Environment.NETHER)
                 .generateStructures(true)
-                .hardcore(true)
                 .seed(worldSeed)
 
             val netherWorld = netherCreator.createWorld()
@@ -96,11 +100,16 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
             val endCreator = WorldCreator("${baseName}_the_end")
                 .environment(World.Environment.THE_END)
                 .generateStructures(true)
-                .hardcore(true)
                 .seed(worldSeed)
 
             val endWorld =
                 endCreator.createWorld() ?: throw IllegalStateException("Failed to create hardcore end for: $baseName")
+
+            // Set difficulty for all worlds to HARD, effectively achieving the same as
+            // hardcore, since we already manage kicking, state, etc.
+            overworldWorld.difficulty = Difficulty.HARD
+            netherWorld.difficulty = Difficulty.HARD
+            endWorld.difficulty = Difficulty.HARD
 
             configureHardcoreWorld(overworldWorld)
             plugin.logger.info("Created Overworld, Nether, and The End dimensions for $baseName")
@@ -108,15 +117,17 @@ class WorldManager(private val plugin: WitchHuntPlugin) {
         }
     }
 
-    private suspend fun createHardcoreWorldWithSeed(): Pair<World, Long> = withContext(plugin.minecraftDispatcher()) {
-        val attemptNumber = getNextAttemptName()
-        val worldName = "$HARDCORE_PREFIX$attemptNumber"
-        val worldSeed = System.currentTimeMillis()
+    private suspend fun createHardcoreWorldWithSeed(): Pair<World, Long> {
+        return withContext(plugin.minecraftDispatcher()) {
+            val attemptNumber = getNextAttemptName()
+            val worldName = "$HARDCORE_PREFIX$attemptNumber"
+            val worldSeed = System.currentTimeMillis()
 
-        plugin.logger.info("Creating hardcore world, $worldName, with seed, $worldSeed")
-        val (overworldWorld, _, _) = createHardcoreWorldDimensions(worldName, worldSeed)
-        plugin.logger.info("Successfully created hardcore world!")
-        Pair(overworldWorld, worldSeed)
+            plugin.logger.info("Creating hardcore world, $worldName, with seed, $worldSeed")
+            val (overworldWorld, _, _) = createHardcoreWorldDimensions(worldName, worldSeed)
+            plugin.logger.info("Successfully created hardcore world!")
+            Pair(overworldWorld, worldSeed)
+        }
     }
 
     private suspend fun deleteLobbyDimensions() {
