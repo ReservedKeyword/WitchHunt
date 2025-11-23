@@ -42,34 +42,38 @@ class SeedTracker(private val plugin: WitchHuntPlugin) {
         )
     }
 
-    suspend fun loadHistory(): List<GameAttempt> = withContext(plugin.asyncDispatcher()) {
-        if (!historyFile.exists()) {
-            return@withContext emptyList()
-        }
+    suspend fun loadHistory(): List<GameAttempt> {
+        return withContext(plugin.asyncDispatcher()) {
+            if (!historyFile.exists()) {
+                return@withContext emptyList()
+            }
 
-        try {
-            val fileText = historyFile.readText()
-            val jsonData = gson.fromJson(fileText, AttemptHistoryData::class.java)
-            plugin.logger.info("Loaded ${jsonData.attempts.size} attempts from history")
-            jsonData.attempts
-        } catch (e: Exception) {
-            plugin.logger.warning("Failed to load attempt history: ${e.message}")
-            emptyList()
+            try {
+                val fileText = historyFile.readText()
+                val jsonData = gson.fromJson(fileText, AttemptHistoryData::class.java)
+                plugin.logger.info("Loaded ${jsonData.attempts.size} attempts from history")
+                jsonData.attempts
+            } catch (e: Exception) {
+                plugin.logger.warning("Failed to load attempt history: ${e.message}")
+                emptyList()
+            }
         }
     }
 
-    suspend fun saveHistory(gameAttempts: List<GameAttempt>) = withContext(plugin.asyncDispatcher()) {
-        try {
-            if (!plugin.dataFolder.exists()) {
-                plugin.dataFolder.mkdirs()
-            }
+    suspend fun saveHistory(gameAttempts: List<GameAttempt>) {
+        withContext(plugin.asyncDispatcher()) {
+            try {
+                if (!plugin.dataFolder.exists()) {
+                    plugin.dataFolder.mkdirs()
+                }
 
-            val historyData = AttemptHistoryData(gameAttempts)
-            val historyJson = gson.toJson(historyData)
-            historyFile.writeText(historyJson)
-            plugin.logger.info("Saved ${gameAttempts.size} game attempt(s) to history")
-        } catch (e: Exception) {
-            e.printStackTrace()
+                val historyData = AttemptHistoryData(gameAttempts)
+                val historyJson = gson.toJson(historyData)
+                historyFile.writeText(historyJson)
+                plugin.logger.info("Saved ${gameAttempts.size} game attempt(s) to history")
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
     }
 }

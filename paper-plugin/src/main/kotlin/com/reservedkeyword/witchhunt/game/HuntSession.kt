@@ -226,8 +226,10 @@ class HuntSession(
         plugin.huntManager.recordHunterEncounter(hunterEncounter)
     }
 
-    private suspend fun removeFromWhitelist() = withContext(plugin.minecraftDispatcher()) {
-        Bukkit.getOfflinePlayer(minecraftUsername).isWhitelisted = false
+    private suspend fun removeFromWhitelist() {
+        withContext(plugin.minecraftDispatcher()) {
+            Bukkit.getOfflinePlayer(minecraftUsername).isWhitelisted = false
+        }
     }
 
     suspend fun start() {
